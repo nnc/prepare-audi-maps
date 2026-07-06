@@ -21,7 +21,7 @@ export COPYFILE_DISABLE=1
 # Constants
 # --------------------------------------------------------------------------
 
-readonly VERSION='1.0.0'
+readonly VERSION='1.0.1'
 readonly SCRIPT_NAME="${0:t}"
 readonly USB_LABEL='AUDIMAPS'          # ExFAT volume label applied when formatting
 readonly MOUNT_WAIT_SECS=30            # max seconds to wait for the volume to mount
@@ -360,11 +360,13 @@ compute_sha256() {
 # Package layout detection (from the ZIP listing, before extraction)
 # --------------------------------------------------------------------------
 
-# Locates metainfo2.txt inside the archive without extracting it.
-# Accepts exactly one of:
-#   metainfo2.txt                 (package at ZIP root)     -> PKG_WRAPPER='.'
-#   <one-dir>/metainfo2.txt      (single wrapper directory) -> PKG_WRAPPER=<dir>
-# Anything else (missing, nested deeper, or ambiguous) is rejected.
+# Locates the package root inside the archive without extracting it.
+# Accepts:
+#   metainfo2.txt at the ZIP root                         -> PKG_WRAPPER='.'
+#   metainfo2.txt inside exactly one wrapper directory    -> PKG_WRAPPER=<dir>
+# Mib1/Mib2 directories carry their own metainfo2.txt copies as part of the
+# package payload, so they are never wrapper candidates and a root
+# metainfo2.txt always wins. Anything else is rejected.
 analyze_zip_layout() {
     local listing
     listing="$(unzip -Z1 "$ZIP_PATH")" || die 'Could not read the ZIP file listing.'
@@ -374,19 +376,17 @@ analyze_zip_layout() {
 
     local -a wrappers
     wrappers=(${(f)"$(grep -E '^[^/]+/metainfo2\.txt$' <<< "$listing" \
-                      | sed 's|/metainfo2\.txt$||' | grep -vx '__MACOSX' | sort -u || true)"})
-
-    local total=$(( root_hit + ${#wrappers} ))
-    if (( total == 0 )); then
-        die 'metainfo2.txt not found at the ZIP root or one level below — this does not look like a MIB2 map package.'
-    elif (( total > 1 )); then
-        die "Ambiguous package: metainfo2.txt found in more than one location (${wrappers[*]:-root})."
-    fi
+                      | sed 's|/metainfo2\.txt$||' | grep -viE '^(__MACOSX|mib[12])$' \
+                      | sort -u || true)"})
 
     if (( root_hit )); then
         PKG_WRAPPER='.'
-    else
+    elif (( ${#wrappers} == 1 )); then
         PKG_WRAPPER="${wrappers[1]}"
+    elif (( ${#wrappers} > 1 )); then
+        die "Ambiguous package: metainfo2.txt found in more than one wrapper directory (${wrappers[*]})."
+    else
+        die 'metainfo2.txt not found at the ZIP root or inside a wrapper directory — this does not look like a MIB2 map package.'
     fi
     debug "Package wrapper directory: ${PKG_WRAPPER}"
 
@@ -829,8 +829,10 @@ verify_usb_layout() {
 
     # A directory on the USB root that itself contains metainfo2.txt means
     # the package was copied inside a wrapper folder — the MMI would miss it.
+    # Mib1/Mib2 are exempt: they legitimately carry their own copies.
     local d
     for d in "$MOUNT_POINT"/*(N/); do
+        [[ "${d:t}" == (#i)mib<1-2> ]] && continue
         if [[ -f "$d/metainfo2.txt" ]]; then
             die "Wrapper directory detected on the USB: ${d:t}/ contains metainfo2.txt. The package must sit at the USB root."
         fi
