@@ -168,7 +168,14 @@ Two subtleties, found by testing on macOS Tahoe, drive the implementation:
 - Check the drive appears in `diskutil list external physical`.
 - The script offers a rescan prompt — replug and press Enter.
 
-**`eraseDisk` fails**
+**`eraseDisk` fails with "restricted by Sandbox" (-69464)**
+- Recent macOS requires the terminal app to hold the *Removable Volumes*
+  permission before it may erase external drives. Enable it under
+  System Settings → Privacy & Security → Files & Folders → your terminal
+  app (or grant Full Disk Access), then quit and reopen the terminal and
+  re-run.
+
+**`eraseDisk` fails otherwise**
 - Something is holding the volume (Spotlight, antivirus, an open Finder
   copy). Wait a few seconds and retry; replug the drive if it persists.
 - Very old/failing sticks can't be partitioned — try another drive.

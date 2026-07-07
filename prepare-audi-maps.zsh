@@ -21,7 +21,7 @@ export COPYFILE_DISABLE=1
 # Constants
 # --------------------------------------------------------------------------
 
-readonly VERSION='1.0.1'
+readonly VERSION='1.0.2'
 readonly SCRIPT_NAME="${0:t}"
 readonly USB_LABEL='AUDIMAPS'          # ExFAT volume label applied when formatting
 readonly MOUNT_WAIT_SECS=30            # max seconds to wait for the volume to mount
@@ -648,6 +648,17 @@ format_disk() {
             diskutil eraseDisk ExFAT "$USB_LABEL" MBR "$SELECTED_DISK"; then
         error "diskutil eraseDisk failed:"
         print -r -- "$RUN_OUTPUT" >&2
+        # macOS blocks disk erasure for apps without the Removable Volumes
+        # permission; surface the actionable fix instead of a generic error.
+        if [[ "$RUN_OUTPUT" == *'restricted by Sandbox'* || "$RUN_OUTPUT" == *'-69464'* ]]; then
+            say ''
+            say "${C_YELLOW}Your terminal app is not allowed to erase removable drives.${C_RESET}"
+            say 'Fix: System Settings → Privacy & Security → Files & Folders →'
+            say '     your terminal app → enable "Removable Volumes"'
+            say '     (or grant it Full Disk Access), then QUIT and REOPEN the'
+            say '     terminal app and re-run this command.'
+            die 'Formatting blocked by macOS privacy settings.'
+        fi
         die 'Formatting failed. Re-insert the drive and try again.'
     fi
     ok "Formatted ${SELECTED_DISK} (ExFAT, MBR, label ${USB_LABEL})"
