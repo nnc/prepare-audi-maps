@@ -172,8 +172,15 @@ Two subtleties, found by testing on macOS Tahoe, drive the implementation:
 - Recent macOS requires the terminal app to hold the *Removable Volumes*
   permission before it may erase external drives. Enable it under
   System Settings → Privacy & Security → Files & Folders → your terminal
-  app (or grant Full Disk Access), then quit and reopen the terminal and
-  re-run.
+  app, or grant it Full Disk Access (apps with Full Disk Access show no
+  separate Removable Volumes toggle — that's expected).
+- The grant only applies to processes started afterwards: **quit the
+  terminal app completely (Cmd+Q) and reopen it**, then re-run. A tab or
+  window opened before the grant keeps the old permissions.
+- Still blocked? Erase once by hand and skip the format step:
+  `sudo diskutil eraseDisk ExFAT AUDIMAPS MBR diskN`, then re-run this
+  tool with `--skip-format`. (Or format in Disk Utility: View → Show All
+  Devices → select the device → Erase → ExFAT, Master Boot Record.)
 
 **`eraseDisk` fails otherwise**
 - Something is holding the volume (Spotlight, antivirus, an open Finder
