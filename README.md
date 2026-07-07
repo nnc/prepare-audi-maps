@@ -4,15 +4,24 @@ A macOS command-line utility that prepares a USB flash drive for **Audi / VW MIB
 navigation map updates from an official map package ZIP
 (e.g. `HIGH2_P450_EU_202625.zip`).
 
-It verifies the package, formats the drive the way the MMI expects
-(MBR + FAT32), copies the package to the USB root, and — critically —
-strips all macOS metadata that is known to make MIB2 head units reject the
-drive.
+It verifies the package, formats the drive as **MBR + FAT32**, copies the
+package to the USB root, and strips the macOS metadata (`._*`, `.DS_Store`,
+`.Spotlight-V100`, `.fseventsd`) that is commonly blamed for MIB2 units
+rejecting a drive.
 
-FAT32 is the default because MIB2 units read it reliably; some head units
-ignore ExFAT drives entirely (symptom: *"no update available"*, as if the
-port were empty). Pass `--exfat` only for a package containing a file larger
-than FAT32's 4 GB limit — the script refuses such a package on FAT32 and
+> **Scope of what we know.** This tool was written to solve one real case: a
+> MIB2 High that would not recognize an ExFAT USB stick, but accepted the
+> identical map package on the same stick reformatted as FAT32. That single
+> result — plus widely-reported community advice — is what informs the choices
+> below. We have not tested across MIB firmware versions, regions, or car
+> models, so treat the confident-sounding claims as "what worked for us and is
+> commonly recommended," not as verified fact for every unit.
+
+FAT32 is the default because it's the format these updates ship on and the one
+we saw work; ExFAT reportedly goes unrecognized on some units (in our case the
+car didn't detect the ExFAT stick at all — symptom: *"no update available"*,
+as if the port were empty). Pass `--exfat` only for a package containing a file
+larger than FAT32's 4 GB limit — the script refuses such a package on FAT32 and
 tells you.
 
 ## Is this for you?
@@ -26,22 +35,25 @@ Use this if **all** of these are true:
 - The car **won't accept a stick you prepared on a Mac** — it says *"no update
   available / found"*, doesn't detect the USB at all, or aborts mid-update.
 
-The usual causes, both of which this tool fixes:
+Two things are commonly blamed for this, and the tool addresses both:
 
-1. **macOS metadata.** Finder/Spotlight silently write hidden files (`._*`,
-   `.DS_Store`, `.Spotlight-V100`, `.fseventsd`) onto the drive; the MMI's
-   strict updater chokes on them or fails its checksum against `metainfo2.txt`.
-2. **Wrong filesystem.** Sticks formatted ExFAT (or GPT-partitioned) are
-   ignored by many MIB2 units. The MMI expects **FAT32 + MBR**.
+1. **macOS metadata.** Finder and Spotlight quietly write hidden files (`._*`,
+   `.DS_Store`, `.Spotlight-V100`, `.fseventsd`) onto drives they touch. The
+   MIB2 updater is widely reported to trip over these — either during its scan
+   or because the file set no longer matches `metainfo2.txt`.
+2. **Wrong filesystem.** These updates ship as **FAT32 + MBR**. ExFAT (or a
+   GPT partition table) reportedly goes unrecognized on some units — in our
+   one case, a MIB2 High didn't see an ExFAT stick at all.
 
 The tool formats the drive as FAT32 + MBR, copies the package to the root, and
 strips the macOS metadata (including the extended attributes macOS otherwise
-rewrites at eject) so the update is recognized.
+rewrites at eject).
 
 **This tool does _not_:** source, download, generate, or unlock map data — you
-bring your own legally-obtained package. It is built and tested for **MIB2**
-(High and Standard); other head-unit generations (MIB1-only cars, MIB3) use a
-different update flow. Windows/Linux are out of scope — use it on a Mac.
+bring your own legally-obtained package. It targets **MIB2** — we confirmed it
+on a MIB2 High; MIB2 Standard likely behaves the same but we haven't tested it.
+Other generations (MIB1-only cars, MIB3) use a different update flow.
+Windows/Linux are out of scope — use it on a Mac.
 
 ```
 ===========================================
@@ -138,10 +150,11 @@ Every run appends to `prepare-audi-maps.log` in the current directory
 
 ### Installing in the car
 
-Insert the USB into the car's USB port (MIB2 High: glovebox / centre
-console), then: **MENU → Setup MMI → System maintenance → System update →
-Update from USB**. Keep the engine running or a charger connected; large
-updates take 30–60 minutes.
+Insert the USB into a car USB port — location varies by model (glovebox,
+centre console, or under the armrest), and some cars only update from one of
+them, so try each. Then, roughly: **MENU → Setup MMI → System maintenance →
+System update** (the exact wording differs across model years). Keep the
+engine running or a charger connected; large updates can take 30–60 minutes.
 
 ## Examples
 
@@ -159,11 +172,12 @@ updates take 30–60 minutes.
 TMPDIR=/Volumes/BigDisk/tmp ./prepare-audi-maps.zsh HIGH2_P450_EU_202625.zip
 ```
 
-## Why macOS metadata breaks Audi MMI updates
+## Why macOS metadata can break Audi MMI updates
 
-MIB2 units run a QNX-based firmware whose updater scans the drive for
-`metainfo2.txt` and then reads the package with a strict, simple parser.
-macOS, however, decorates every volume it touches:
+This is the commonly-reported explanation, not something we reverse-engineered
+from the firmware: the MIB2 updater scans the drive for `metainfo2.txt` and
+reads the package expecting only the files it lists. macOS, meanwhile,
+decorates every volume it touches:
 
 - **`.DS_Store`** — Finder view settings, written into every browsed folder.
 - **`._*` (AppleDouble) files** — ExFAT/FAT32 can't store extended
@@ -173,17 +187,18 @@ macOS, however, decorates every volume it touches:
 - **`.fseventsd`** — the filesystem-events journal, (re)written at eject.
 - **`.Trashes`** — per-volume trash.
 
-The updater either chokes on these unexpected entries during package
-enumeration or fails its signature/checksum validation because the file set
-no longer matches `metainfo2.txt`. The symptom is always the same: the MMI
-says *"No update found"* or aborts mid-update.
+The theory is that the updater trips over these unexpected entries during its
+scan, or fails validation because the file set no longer matches
+`metainfo2.txt`; the reported symptom is *"No update found"* or an update that
+aborts partway. We can't confirm the exact mechanism, but stripping the
+metadata is cheap insurance and does no harm.
 
 This tool removes all of the above **after** copying, and additionally
-plants two harmless guard files (`.metadata_never_index` and
-`.fseventsd/no_log`) that stop macOS from re-creating its metadata when the
-drive is ejected. MIB2 units ignore these.
+plants two guard files (`.metadata_never_index` and `.fseventsd/no_log`) that
+discourage macOS from re-creating its metadata when the drive is ejected.
+These are ordinary hidden files; we haven't seen a unit object to them.
 
-Two subtleties, found by testing on macOS Tahoe, drive the implementation:
+Two macOS behaviors we did verify (on macOS Tahoe) shape the implementation:
 
 - Deleting `._*` files is not enough. macOS keeps the underlying extended
   attributes (e.g. `com.apple.provenance`) cached and **writes them back as
@@ -230,15 +245,15 @@ Two subtleties, found by testing on macOS Tahoe, drive the implementation:
 
 **The car says "No update found" / "no update available"**
 - If the car reacts to the stick but reports no update: the package
-  region/version must match what your MMI firmware accepts — a P450 (MIB2
-  High) package will not install on MIB2 Standard, and some units require
-  activation (FeC) for newer map releases.
+  region/version likely doesn't match what your MMI firmware accepts. A P450
+  (MIB2 High) package is meant for MIB2 High, not Standard, and some units are
+  reported to need activation (FeC) for newer map releases.
 - If the car does **not see the stick at all** (as if the port were empty):
-  the drive is almost certainly **ExFAT** — reformat as **FAT32** (the
-  default; drop `--exfat`). Confirmed on a MIB2 High that ignored a 64 GB
+  the filesystem is a likely culprit — reformat as **FAT32** (the default;
+  drop `--exfat`). This is the exact case we hit: a MIB2 High ignored a 64 GB
   ExFAT stick but read the identical package on the same stick as FAT32.
 - Confirm `metainfo2.txt` is at the USB **root** (the script verifies this).
-- Try the other USB port; some cars only update from one of them.
+- Try the other USB port; some cars are reported to update from only one.
 
 **Copy is slow**
 - USB 2.0 ports and cheap sticks write at 5–15 MB/s; a 25 GB package can
