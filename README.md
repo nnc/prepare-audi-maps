@@ -5,14 +5,48 @@ navigation map updates from an official map package ZIP
 (e.g. `HIGH2_P450_EU_202625.zip`).
 
 It verifies the package, formats the drive the way the MMI expects
-(MBR + ExFAT), copies the package to the USB root, and — critically —
+(MBR + FAT32), copies the package to the USB root, and — critically —
 strips all macOS metadata that is known to make MIB2 head units reject the
 drive.
+
+FAT32 is the default because MIB2 units read it reliably; some head units
+ignore ExFAT drives entirely (symptom: *"no update available"*, as if the
+port were empty). Pass `--exfat` only for a package containing a file larger
+than FAT32's 4 GB limit — the script refuses such a package on FAT32 and
+tells you.
+
+## Is this for you?
+
+Use this if **all** of these are true:
+
+- You are on **macOS** (Ventura or newer) and want to write a USB stick for an
+  **Audi or VW MIB2** navigation map update.
+- You already have an **official map package ZIP** (e.g.
+  `HIGH2_P450_EU_202625.zip`, containing `metainfo2.txt` + `Mib1`/`Mib2`).
+- The car **won't accept a stick you prepared on a Mac** — it says *"no update
+  available / found"*, doesn't detect the USB at all, or aborts mid-update.
+
+The usual causes, both of which this tool fixes:
+
+1. **macOS metadata.** Finder/Spotlight silently write hidden files (`._*`,
+   `.DS_Store`, `.Spotlight-V100`, `.fseventsd`) onto the drive; the MMI's
+   strict updater chokes on them or fails its checksum against `metainfo2.txt`.
+2. **Wrong filesystem.** Sticks formatted ExFAT (or GPT-partitioned) are
+   ignored by many MIB2 units. The MMI expects **FAT32 + MBR**.
+
+The tool formats the drive as FAT32 + MBR, copies the package to the root, and
+strips the macOS metadata (including the extended attributes macOS otherwise
+rewrites at eject) so the update is recognized.
+
+**This tool does _not_:** source, download, generate, or unlock map data — you
+bring your own legally-obtained package. It is built and tested for **MIB2**
+(High and Standard); other head-unit generations (MIB1-only cars, MIB3) use a
+different update flow. Windows/Linux are out of scope — use it on a Mac.
 
 ```
 ===========================================
  Audi / VW MIB2 Map USB Creator
- Version 1.0.0
+ Version 1.1.0
 ===========================================
 ==> Map package: /Users/you/Downloads/HIGH2_P450_EU_202625.zip
 ✓ ZIP verified
@@ -69,7 +103,8 @@ ln -s "$PWD/prepare-audi-maps.zsh" /usr/local/bin/prepare-audi-maps
 | --- | --- |
 | `--verify-copy` | After copying, re-compare source and USB with checksums (`rsync -c`). Reads every byte twice; slow but airtight. |
 | `--dry-run` | Validate the ZIP, show detected drives and the plan; change nothing. |
-| `--skip-format` | Keep the existing volume (must already be ExFAT or FAT32). |
+| `--skip-format` | Keep the existing volume (must already be FAT32 or ExFAT). |
+| `--exfat` | Format as ExFAT instead of FAT32. Only needed for a package with a file over FAT32's 4 GB limit; most MIB2 units prefer FAT32. |
 | `--no-eject` | Leave the drive mounted when finished. |
 | `-v`, `--verbose` | Extra diagnostics. |
 | `-q`, `--quiet` | Only warnings, errors and prompts. |
@@ -88,8 +123,9 @@ Every run appends to `prepare-audi-maps.log` in the current directory
 3. Extracts to a temporary directory (removed automatically, also on Ctrl-C).
 4. Detects USB drives via `diskutil`'s plist output (no fragile text
    parsing) and shows a numbered menu: volume, filesystem, capacity, disk id.
-5. Asks you to type `YES`, then erases the drive as **MBR + ExFAT** and
-   verifies the resulting partition scheme and filesystem.
+5. Asks you to type `YES`, then erases the drive as **MBR + FAT32** (or
+   ExFAT with `--exfat`) and verifies the resulting partition scheme and
+   filesystem.
 6. Disables Spotlight indexing (`.metadata_never_index`) and suppresses the
    filesystem-events journal (`.fseventsd/no_log`) before any data lands.
 7. Copies with `rsync` (progress shown, timestamps preserved; re-running
@@ -178,9 +214,9 @@ Two subtleties, found by testing on macOS Tahoe, drive the implementation:
   terminal app completely (Cmd+Q) and reopen it**, then re-run. A tab or
   window opened before the grant keeps the old permissions.
 - Still blocked? Erase once by hand and skip the format step:
-  `sudo diskutil eraseDisk ExFAT AUDIMAPS MBR diskN`, then re-run this
+  `sudo diskutil eraseDisk FAT32 AUDIMAPS MBR diskN`, then re-run this
   tool with `--skip-format`. (Or format in Disk Utility: View → Show All
-  Devices → select the device → Erase → ExFAT, Master Boot Record.)
+  Devices → select the device → Erase → MS-DOS (FAT), Master Boot Record.)
 
 **`eraseDisk` fails otherwise**
 - Something is holding the volume (Spotlight, antivirus, an open Finder
@@ -192,11 +228,16 @@ Two subtleties, found by testing on macOS Tahoe, drive the implementation:
   mounts it is root-protected. Reformat with this tool — the
   `.metadata_never_index` guard stops it from coming back.
 
-**The car says "No update found"**
+**The car says "No update found" / "no update available"**
+- If the car reacts to the stick but reports no update: the package
+  region/version must match what your MMI firmware accepts — a P450 (MIB2
+  High) package will not install on MIB2 Standard, and some units require
+  activation (FeC) for newer map releases.
+- If the car does **not see the stick at all** (as if the port were empty):
+  the drive is almost certainly **ExFAT** — reformat as **FAT32** (the
+  default; drop `--exfat`). Confirmed on a MIB2 High that ignored a 64 GB
+  ExFAT stick but read the identical package on the same stick as FAT32.
 - Confirm `metainfo2.txt` is at the USB **root** (the script verifies this).
-- The package region/version must match what your MMI firmware accepts —
-  a P450 (MIB2 High) package will not install on MIB2 Standard, and some
-  units require activation (FeC) for newer map releases.
 - Try the other USB port; some cars only update from one of them.
 
 **Copy is slow**
