@@ -80,7 +80,7 @@ Detected USB drives:
 ## Installation
 
 ```sh
-git clone https://github.com/you/prepare-audi-maps.git
+git clone https://github.com/nnc/prepare-audi-maps.git
 cd prepare-audi-maps
 chmod +x prepare-audi-maps.zsh
 
