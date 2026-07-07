@@ -3,9 +3,13 @@
 # prepare-audi-maps.zsh — prepare a USB drive for Audi / VW MIB2 navigation
 # map updates on macOS.
 #
-# Verifies an official map package ZIP, formats a USB drive (MBR + ExFAT),
+# Verifies an official map package ZIP, formats a USB drive (MBR + FAT32),
 # copies the package to the USB root, and strips all macOS metadata that is
 # known to make MIB2 head units reject the drive.
+#
+# FAT32 is the default because MIB2 units read it reliably; ExFAT support is
+# spotty and some head units ignore ExFAT drives entirely. Use --exfat only
+# for a package containing a file larger than FAT32's 4 GB limit.
 #
 # Requirements: macOS 13 (Ventura) or newer, stock system tools only.
 #
@@ -21,9 +25,9 @@ export COPYFILE_DISABLE=1
 # Constants
 # --------------------------------------------------------------------------
 
-readonly VERSION='1.0.2'
+readonly VERSION='1.1.0'
 readonly SCRIPT_NAME="${0:t}"
-readonly USB_LABEL='AUDIMAPS'          # ExFAT volume label applied when formatting
+readonly USB_LABEL='AUDIMAPS'          # volume label applied when formatting
 readonly MOUNT_WAIT_SECS=30            # max seconds to wait for the volume to mount
 readonly -a METADATA_DIRS=('.Spotlight-V100' '.Trashes' '.fseventsd' '__MACOSX')
 
@@ -57,6 +61,7 @@ SKIP_FORMAT=0
 NO_EJECT=0
 VERBOSE=0
 QUIET=0
+FORMAT_EXFAT=0         # default format is FAT32; --exfat opts into ExFAT
 
 # --------------------------------------------------------------------------
 # Colours & output
@@ -165,7 +170,9 @@ USAGE:
 OPTIONS:
     --verify-copy    After copying, re-compare source and USB with checksums.
     --dry-run        Validate the ZIP and show the plan; change nothing.
-    --skip-format    Do not format; require an existing ExFAT/FAT32 volume.
+    --skip-format    Do not format; require an existing FAT32/ExFAT volume.
+    --exfat          Format as ExFAT instead of FAT32 (only needed for a
+                     package with a file larger than FAT32's 4 GB limit).
     --no-eject       Leave the USB mounted when finished.
     -v, --verbose    Extra diagnostics.
     -q, --quiet      Only warnings, errors and prompts.
@@ -178,6 +185,9 @@ EXAMPLES:
     ${SCRIPT_NAME} --verify-copy "~/Downloads/HIGH2_P450_EU_202625.zip"
 
 NOTES:
+    The drive is formatted FAT32 (MBR) by default — the format MIB2 units
+    read most reliably. Use --exfat only if a file exceeds FAT32's 4 GB limit.
+
     Formatting erases the selected USB drive completely. The script only
     proceeds after you select the disk and type YES.
 
@@ -280,6 +290,7 @@ parse_args() {
             --verify-copy)  VERIFY_COPY=1 ;;
             --dry-run)      DRY_RUN=1 ;;
             --skip-format)  SKIP_FORMAT=1 ;;
+            --exfat)        FORMAT_EXFAT=1 ;;
             --no-eject)     NO_EJECT=1 ;;
             -v|--verbose)   VERBOSE=1 ;;
             -q|--quiet)     QUIET=1 ;;
@@ -482,6 +493,17 @@ validate_package() {
     mib2=("$PKG_ROOT"/(#i)mib2(N/))
     (( ${#mib1} || ${#mib2} )) || die 'Neither Mib1 nor Mib2 directory found in the package.'
 
+    # FAT32 (the default format) caps a single file at 4 GB. Refuse up front,
+    # pointing at --exfat, rather than failing partway through the copy.
+    if (( ! FORMAT_EXFAT && ! SKIP_FORMAT )); then
+        local big
+        big="$(find "$PKG_ROOT" -type f -size +4294967295c -print 2>/dev/null | head -1)"
+        if [[ -n "$big" ]]; then
+            die "A file exceeds FAT32's 4 GB limit: ${big#$PKG_ROOT/}
+Re-run with --exfat to format the drive as ExFAT instead."
+        fi
+    fi
+
     say ''
     say "${C_BOLD}Package summary${C_RESET}"
     say "  Region:   ${PKG_REGION}"
@@ -640,12 +662,14 @@ confirm_erase() {
 # Formatting
 # --------------------------------------------------------------------------
 
-# Erases the selected disk as MBR + ExFAT with the standard label.
+# Erases the selected disk as MBR + FAT32 (or ExFAT with --exfat).
 format_disk() {
-    info "Formatting ${SELECTED_DISK} as ExFAT (MBR)..."
+    local fs_label='FAT32'
+    (( FORMAT_EXFAT )) && fs_label='ExFAT'
+    info "Formatting ${SELECTED_DISK} as ${fs_label} (MBR)..."
     diskutil unmountDisk "$SELECTED_DISK" > /dev/null 2>&1 || true
     if ! run_with_spinner "Erasing ${SELECTED_DISK}..." \
-            diskutil eraseDisk ExFAT "$USB_LABEL" MBR "$SELECTED_DISK"; then
+            diskutil eraseDisk "$fs_label" "$USB_LABEL" MBR "$SELECTED_DISK"; then
         error "diskutil eraseDisk failed:"
         print -r -- "$RUN_OUTPUT" >&2
         # macOS blocks disk erasure for apps without the Removable Volumes
@@ -661,7 +685,7 @@ format_disk() {
         fi
         die 'Formatting failed. Re-insert the drive and try again.'
     fi
-    ok "Formatted ${SELECTED_DISK} (ExFAT, MBR, label ${USB_LABEL})"
+    ok "Formatted ${SELECTED_DISK} (${fs_label}, MBR, label ${USB_LABEL})"
 }
 
 # Confirms partition scheme + filesystem after formatting and resolves the
@@ -679,14 +703,17 @@ verify_format() {
     pdev="$(plist_get "$plist" 'AllDisksAndPartitions.0.Partitions.0.DeviceIdentifier')" \
         || die 'No partition found after formatting.'
 
-    resolve_mount_point "$pdev" 1
-    ok "Verified: MBR partition scheme, ExFAT filesystem, mounted at ${MOUNT_POINT}"
+    local expected_fs='msdos' fs_label='FAT32'
+    if (( FORMAT_EXFAT )); then expected_fs='exfat'; fs_label='ExFAT'; fi
+    resolve_mount_point "$pdev" "$expected_fs"
+    ok "Verified: MBR partition scheme, ${fs_label} filesystem, mounted at ${MOUNT_POINT}"
 }
 
 # Waits for the given partition to mount, verifies its filesystem and sets
-# MOUNT_POINT. Second arg: 1 = require ExFAT exactly, 0 = allow ExFAT/FAT32.
+# MOUNT_POINT. Second arg: 'msdos' or 'exfat' to require exactly that type,
+# empty to accept either (both are MMI-compatible).
 resolve_mount_point() {
-    local pdev="$1" strict="$2"
+    local pdev="$1" want="$2"
     local pinfo fstype mp='' waited=0
 
     while (( waited < MOUNT_WAIT_SECS )); do
@@ -702,12 +729,12 @@ resolve_mount_point() {
     [[ -n "$mp" ]] || die "The volume on $pdev did not mount within ${MOUNT_WAIT_SECS}s."
 
     fstype="$(plist_get "$pinfo" 'FilesystemType')" || fstype=''
-    if (( strict )); then
-        [[ "$fstype" == 'exfat' ]] || die "Filesystem is '$fstype', expected exfat."
-    else
-        [[ "$fstype" == 'exfat' || "$fstype" == 'msdos' ]] \
-            || die "Filesystem is '$fstype'; MIB2 needs ExFAT or FAT32. Run without --skip-format."
-    fi
+    case "$want" in
+        msdos) [[ "$fstype" == 'msdos' ]] || die "Filesystem is '$fstype', expected FAT32 after formatting." ;;
+        exfat) [[ "$fstype" == 'exfat' ]] || die "Filesystem is '$fstype', expected ExFAT after formatting." ;;
+        *)     [[ "$fstype" == 'exfat' || "$fstype" == 'msdos' ]] \
+                   || die "Filesystem is '$fstype'; MIB2 needs FAT32 or ExFAT. Run without --skip-format." ;;
+    esac
     MOUNT_POINT="$mp"
     log_file "[MNT ] $pdev at $MOUNT_POINT ($fstype)"
 }
@@ -728,7 +755,7 @@ use_existing_volume() {
         warn "Partition scheme is '$scheme', not MBR — some MIB2 units reject GPT drives."
     fi
 
-    resolve_mount_point "$pdev" 0
+    resolve_mount_point "$pdev" ''
 
     say ''
     say "Existing files on the drive will be kept; the package will be copied on top."
@@ -917,9 +944,10 @@ print_dry_run_plan() {
     local target='<selected USB disk>'
     [[ -n "$SELECTED_DISK" ]] && target="${SELECTED_DISK} (${SELECTED_MEDIA}, ${SELECTED_CAP})"
     if (( SKIP_FORMAT )); then
-        say "  1. Use the existing ExFAT/FAT32 volume on ${target}"
+        say "  1. Use the existing FAT32/ExFAT volume on ${target}"
     else
-        say "  1. Erase ${target} as MBR + ExFAT, label ${USB_LABEL}"
+        local fs_label='FAT32'; (( FORMAT_EXFAT )) && fs_label='ExFAT'
+        say "  1. Erase ${target} as MBR + ${fs_label}, label ${USB_LABEL}"
     fi
     say '  2. Disable Spotlight indexing on the volume'
     say "  3. Copy the package ($(human_size "$PKG_BYTES")) to the USB root with rsync"
