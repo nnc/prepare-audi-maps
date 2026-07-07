@@ -74,7 +74,7 @@ Package summary
 
 Detected USB drives:
   1) Kingston DataTraveler 3.0  (disk4)
-     Volume:     AUDIUSB
+     Volume:     KINGSTON          # the drive as found — reformatted to AUDIMAPS
      Filesystem: ExFAT
      Capacity:   61.9 GB
 ```
@@ -116,7 +116,7 @@ ln -s "$PWD/prepare-audi-maps.zsh" /usr/local/bin/prepare-audi-maps
 | `--verify-copy` | After copying, re-compare source and USB with checksums (`rsync -c`). Reads every byte twice; slow but airtight. |
 | `--dry-run` | Validate the ZIP, show detected drives and the plan; change nothing. |
 | `--skip-format` | Keep the existing volume (must already be FAT32 or ExFAT). |
-| `--exfat` | Format as ExFAT instead of FAT32. Only needed for a package with a file over FAT32's 4 GB limit; most MIB2 units prefer FAT32. |
+| `--exfat` | Format as ExFAT instead of FAT32. Only needed for a package with a file over FAT32's 4 GB limit; FAT32 is the tested default. |
 | `--no-eject` | Leave the drive mounted when finished. |
 | `-v`, `--verbose` | Extra diagnostics. |
 | `-q`, `--quiet` | Only warnings, errors and prompts. |
